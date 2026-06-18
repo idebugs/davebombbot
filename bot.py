@@ -1,34 +1,23 @@
-import os, re, time, threading, requests
+import os
+import re
+import time
+import threading
+import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# ========== READ ENVIRONMENT VARIABLES ==========
-BOT_TOKEN = os.getenv("BOT_TOKEN")          # Must be set on server
-TWILIO_SID = os.getenv("TWILIO_SID", "")
-TWILIO_AUTH = os.getenv("TWILIO_AUTH", "")
-TWILIO_FROM = os.getenv("TWILIO_FROM", "")
+# ========== READ TOKEN FROM ENV ==========
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN environment variable not set!")
 
-# ========== SMS & CALL APIS ==========
+# ========== SMS & CALL APIS (Simplified) ==========
 SMS_APIS = [
-    {"name":"textbelt","url":"https://textbelt.com/text","method":"post","data":lambda n,m:{"phone":n,"message":m,"key":"textbelt"}},
+    {"name": "textbelt", "url": "https://textbelt.com/text", "method": "post",
+     "data": lambda n, m: {"phone": n, "message": m, "key": "textbelt"}},
 ]
-if TWILIO_SID and TWILIO_SID != "":
-    SMS_APIS.append({
-        "name":"twilio",
-        "url":f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_SID}/Messages.json",
-        "method":"post",
-        "auth":(TWILIO_SID, TWILIO_AUTH),
-        "data":lambda n,m:{"To":n,"From":TWILIO_FROM,"Body":m}
-    })
-    CALL_APIS = [{
-        "name":"twilio_voice",
-        "url":f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_SID}/Calls.json",
-        "method":"post",
-        "auth":(TWILIO_SID, TWILIO_AUTH),
-        "data":lambda n:{"To":n,"From":TWILIO_FROM,"Url":"http://demo.twilio.com/docs/voice.xml"}
-    }]
-else:
-    CALL_APIS = []
+
+CALL_APIS = []  # No call APIs without Twilio – but we'll keep structure
 
 active_attacks = {}
 attack_logs = {}
@@ -36,36 +25,17 @@ attack_logs = {}
 def send_sms(number, message):
     for api in SMS_APIS:
         try:
-            if api["method"] == "post":
-                data = api["data"](number, message)
-                if "auth" in api:
-                    resp = requests.post(api["url"], data=data, auth=api["auth"], timeout=5)
-                else:
-                    resp = requests.post(api["url"], data=data, headers=api.get("headers", {}), timeout=5)
-            else:
-                params = api["params"](number, message)
-                resp = requests.get(api["url"], params=params, timeout=5)
+            resp = requests.post(api["url"], data=api["data"](number, message), timeout=5)
             if resp.status_code in [200, 201, 202]:
                 return True, f"SMS sent via {api['name']}"
         except:
             continue
-    return False, "All SMS APIs failed – check keys/credit"
+    return False, "All SMS APIs failed – check keys"
 
 def make_call(number):
-    for api in CALL_APIS:
-        try:
-            data = api["data"](number)
-            if "auth" in api:
-                resp = requests.post(api["url"], data=data, auth=api["auth"], timeout=5)
-            else:
-                resp = requests.post(api["url"], data=data, headers=api.get("headers", {}), timeout=5)
-            if resp.status_code in [200, 201, 202]:
-                return True, f"Call initiated via {api['name']}"
-        except:
-            continue
-    return False, "No call API available – set Twilio"
+    return False, "Call not configured – add Twilio keys"
 
-def attack_worker(user_id, target, mode, count=30, delay=3):
+def attack_worker(user_id, target, mode, count=20, delay=3):
     logs = []
     for i in range(count):
         if not active_attacks.get(user_id, {}).get("running", False):
@@ -79,7 +49,7 @@ def attack_worker(user_id, target, mode, count=30, delay=3):
         attack_logs[user_id] = logs[-10:]
         time.sleep(delay)
     else:
-        logs.append("🏁 Attack finished")
+        logs.append("🏁 Finished")
     attack_logs[user_id] = logs[-10:]
     if user_id in active_attacks:
         active_attacks[user_id]["running"] = False
@@ -88,10 +58,10 @@ async def start(update, context):
     keyboard = [
         [InlineKeyboardButton("🎯 Set Target", callback_data="set_target")],
         [InlineKeyboardButton("📱 SMS", callback_data="mode_sms"), InlineKeyboardButton("📞 Call", callback_data="mode_call")],
-        [InlineKeyboardButton("▶️ Start Attack", callback_data="start_attack"), InlineKeyboardButton("⏹️ Stop Attack", callback_data="stop_attack")],
+        [InlineKeyboardButton("▶️ Start", callback_data="start_attack"), InlineKeyboardButton("⏹️ Stop", callback_data="stop_attack")],
         [InlineKeyboardButton("📊 Status", callback_data="status")]
     ]
-    await update.message.reply_text("🤖 *LUBV Bomb Bot*\nUse /settarget +1234567890 to set number.", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    await update.message.reply_text("🤖 *LUBV Bomb Bot*\nUse /settarget +1234567890", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def set_target(update, context):
     user_id = update.effective_user.id
@@ -102,7 +72,7 @@ async def set_target(update, context):
     if not re.match(r'^\+?\d{7,15}$', number):
         await update.message.reply_text("Invalid. Use +1234567890")
         return
-    active_attacks.setdefault(user_id, {"target":"","mode":"sms","running":False,"thread":None})["target"] = number
+    active_attacks.setdefault(user_id, {"target": "", "mode": "sms", "running": False, "thread": None})["target"] = number
     await update.message.reply_text(f"✅ Target set to `{number}`", parse_mode="Markdown")
 
 async def button_handler(update, context):
@@ -117,11 +87,7 @@ async def button_handler(update, context):
         active_attacks.setdefault(user_id, {"target":"","mode":"sms","running":False,"thread":None})["mode"] = "sms"
         await query.edit_message_text("📱 Mode: SMS")
     elif data == "mode_call":
-        if not CALL_APIS:
-            await query.edit_message_text("❌ Call not available – set Twilio keys")
-            return
-        active_attacks.setdefault(user_id, {"target":"","mode":"call","running":False,"thread":None})["mode"] = "call"
-        await query.edit_message_text("📞 Mode: Call")
+        await query.edit_message_text("📞 Call mode – but no call API configured yet.")
     elif data == "start_attack":
         att = active_attacks.get(user_id)
         if not att or not att.get("target"):
@@ -131,7 +97,7 @@ async def button_handler(update, context):
             await query.edit_message_text("⚠️ Already running")
             return
         att["running"] = True
-        t = threading.Thread(target=attack_worker, args=(user_id, att["target"], att["mode"], 30, 3))
+        t = threading.Thread(target=attack_worker, args=(user_id, att["target"], att["mode"], 20, 3))
         t.daemon = True
         t.start()
         att["thread"] = t
